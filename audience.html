@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+<title>參與互動</title>
+<script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-database-compat.js"></script>
+<script src="firebase-config.js"></script>
+<script src="common.js"></script>
+<style>
+  :root{
+    --bg:#0f1115; --panel:#1a1d24; --panel2:#20242e; --border:#2a2f3a;
+    --text:#f4f6fa; --muted:#9aa3b2; --accent:#6ea8fe; --accent2:#22c55e; --danger:#f87171;
+  }
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent;}
+  html,body{height:100%;margin:0;}
+  body{
+    background:var(--bg);color:var(--text);
+    font-family:-apple-system,"PingFang TC","Noto Sans TC",Segoe UI,sans-serif;
+    display:flex;flex-direction:column;min-height:100vh;padding:18px;
+  }
+  header{text-align:center;padding:10px 0 18px;}
+  header .badge{display:inline-block;font-size:12px;color:var(--accent);letter-spacing:1px;text-transform:uppercase;font-weight:700;margin-bottom:8px;}
+  header h1{font-size:20px;margin:0;line-height:1.4;}
+
+  main{flex:1;display:flex;flex-direction:column;justify-content:center;gap:16px;}
+
+  #waiting{text-align:center;color:var(--muted);padding:40px 10px;}
+  #waiting .dot{display:inline-block;width:10px;height:10px;border-radius:50%;background:var(--accent2);margin-right:8px;animation:pulse 1.4s infinite;}
+  @keyframes pulse{0%,100%{opacity:.3}50%{opacity:1}}
+
+  textarea, input[type=text]{
+    width:100%;padding:14px;border-radius:14px;border:1px solid var(--border);
+    background:var(--panel2);color:var(--text);font-size:16px;font-family:inherit;resize:none;
+  }
+  textarea{min-height:110px;}
+  .charcount{text-align:right;font-size:12px;color:var(--muted);margin-top:4px;}
+
+  .submit-btn{
+    width:100%;padding:15px;border-radius:14px;border:none;background:var(--accent);
+    color:#08101f;font-size:16px;font-weight:800;cursor:pointer;transition:.15s;
+  }
+  .submit-btn:disabled{background:var(--panel2);color:var(--muted);cursor:not-allowed;}
+  .submit-btn:active:not(:disabled){transform:scale(.98);}
+
+  .opt-btn{
+    width:100%;text-align:left;padding:16px 18px;border-radius:14px;border:1px solid var(--border);
+    background:var(--panel2);color:var(--text);font-size:16px;font-weight:600;cursor:pointer;
+    margin-bottom:10px;display:flex;align-items:center;justify-content:space-between;transition:.15s;
+  }
+  .opt-btn.selected{border-color:var(--accent);background:rgba(110,168,254,.12);color:var(--accent);}
+  .opt-btn:active{transform:scale(.98);}
+  .opt-check{width:20px;height:20px;border-radius:50%;border:2px solid var(--border);flex-shrink:0;}
+  .opt-btn.selected .opt-check{border-color:var(--accent);background:var(--accent);}
+
+  .feedback{text-align:center;font-size:13px;color:var(--muted);min-height:18px;}
+  .cooldown{color:var(--accent);}
+
+  #toast{
+    position:fixed;top:16px;left:50%;transform:translateX(-50%) translateY(-40px);
+    background:var(--accent2);color:#08210f;padding:10px 20px;border-radius:30px;
+    font-size:14px;font-weight:700;opacity:0;transition:.3s;pointer-events:none;z-index:50;
+  }
+  #toast.show{opacity:1;transform:translateX(-50%) translateY(0);}
+
+  .wc-history{display:flex;flex-wrap:wrap;gap:6px;justify-content:center;margin-top:4px;}
+  .wc-chip{background:var(--panel2);border:1px solid var(--border);border-radius:20px;padding:4px 12px;font-size:12px;color:var(--muted);}
+
+  footer{text-align:center;font-size:11px;color:var(--muted);padding-top:16px;}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="badge" id="typeTag">即時互動系統</div>
+  <h1 id="qTitle">連線中…</h1>
+</header>
+
+<main id="main">
+  <div id="waiting"><span class="dot"></span>等待主持人開始互動題目…</div>
+</main>
+
+<div id="toast">✓ 已送出</div>
+<footer>由主持人建立的互動場次 · 內容匿名送出</footer>
+
+<script>
+firebase.initializeApp(firebaseConfig);
+const db = firebase.database();
+const sessionId = getSessionId();
+const sessRef = db.ref('sessions/' + sessionId);
+const deviceId = getDeviceId();
+
+function toast(msg) {
+  const t = document.getElementById('toast');
+  t.textContent = '✓ ' + msg;
+  t.classList.add('show');
+  setTimeout(() => t.classList.remove('show'), 1600);
+}
+
+let questionsCache = {};
+let activeId = null;
+let renderedFor = null;
+let cooldownTimer = null;
+
+sessRef.child('questions').on('value', snap => { questionsCache = snap.val() || {}; render(); });
+sessRef.child('activeQuestionId').on('value', snap => { activeId = snap.val() || null; render(); });
+
+const typeLabel = { wordcloud: '文字雲', poll: '投票', qa: '留言板 / Q&A' };
+
+function render() {
+  const main = document.getElementById('main');
+  const tag = document.getElementById('typeTag');
+  const titleEl = document.getElementById('qTitle');
+  if (cooldownTimer) { clearInterval(cooldownTimer); cooldownTimer = null; }
+
+  if (!activeId || !questionsCache[activeId]) {
+    tag.textContent = '即時互動系統';
+    titleEl.textContent = '等待主持人開始';
+    main.innerHTML = '<div id="waiting"><span class="dot"></span>等待主持人開始互動題目…</div>';
+    renderedFor = null;
+    return;
+  }
+
+  const q = questionsCache[activeId];
+  tag.textContent = typeLabel[q.type] || '';
+  titleEl.textContent = q.title;
+
+  if (renderedFor === activeId) return; // 避免同題目重複重繪打斷輸入
+  renderedFor = activeId;
+
+  if (q.type === 'wordcloud') renderWordcloudUI(q);
+  else if (q.type === 'poll') renderPollUI(q);
+  else if (q.type === 'qa') renderQaUI(q);
+}
+
+// ---------- 文字雲輸入 ----------
+function renderWordcloudUI(q) {
+  const main = document.getElementById('main');
+  main.innerHTML = `
+    <input type="text" id="wcInput" placeholder="輸入一個關鍵字…" maxlength="20" />
+    <button class="submit-btn" id="wcSubmit">送出</button>
+    <div class="feedback" id="wcFeedback"></div>
+    <div class="wc-history" id="wcHistory"></div>`;
+
+  const historyKey = 'lps_wc_hist_' + sessionId + '_' + activeId;
+  const cooldownKey = 'lps_wc_cd_' + sessionId + '_' + activeId;
+  const COOLDOWN = 4, MAX_WORDS = 8;
+
+  function history() { return JSON.parse(localStorage.getItem(historyKey) || '[]'); }
+  function renderHistory() {
+    const h = history();
+    document.getElementById('wcHistory').innerHTML = h.map(w => `<span class="wc-chip">${escapeHTML(w)}</span>`).join('');
+  }
+  renderHistory();
+
+  function updateBtnState() {
+    const remain = COOLDOWN - getCooldownRemaining(cooldownKey);
+    const btn = document.getElementById('wcSubmit');
+    const fb = document.getElementById('wcFeedback');
+    if (!btn) return;
+    if (history().length >= MAX_WORDS) {
+      btn.disabled = true;
+      fb.innerHTML = `這題已送出 ${MAX_WORDS} 個字，感謝參與！`;
+      if (cooldownTimer) clearInterval(cooldownTimer);
+      return;
+    }
+    if (remain > 0) {
+      btn.disabled = true;
+      fb.innerHTML = `<span class="cooldown">請等待 ${Math.ceil(remain)} 秒再送出</span>`;
+    } else {
+      btn.disabled = false;
+      fb.textContent = `還可以送出 ${MAX_WORDS - history().length} 個字`;
+      if (cooldownTimer) clearInterval(cooldownTimer);
+    }
+  }
+  updateBtnState();
+  cooldownTimer = setInterval(updateBtnState, 500);
+
+  document.getElementById('wcSubmit').onclick = () => {
+    const input = document.getElementById('wcInput');
+    const val = sanitizeInput(input.value, 20);
+    if (!val) return;
+    sessRef.child('responses/' + activeId).push({ text: val, deviceId, ts: firebase.database.ServerValue.TIMESTAMP });
+    const h = history(); h.push(val); localStorage.setItem(historyKey, JSON.stringify(h));
+    setCooldownNow(cooldownKey);
+    input.value = '';
+    renderHistory();
+    updateBtnState();
+    toast('已送出');
+  };
+  document.getElementById('wcInput').addEventListener('keydown', e => {
+    if (e.key === 'Enter') document.getElementById('wcSubmit').click();
+  });
+}
+
+// ---------- 投票輸入 ----------
+function renderPollUI(q) {
+  const main = document.getElementById('main');
+  const voteKey = 'lps_vote_' + sessionId + '_' + activeId;
+  let selected = JSON.parse(localStorage.getItem(voteKey) || 'null');
+  const isMulti = !!q.multi;
+
+  let html = '<div id="pollOpts">';
+  q.options.forEach((opt, i) => {
+    const isSel = isMulti ? (Array.isArray(selected) && selected.includes(i)) : selected === i;
+    html += `<button type="button" class="opt-btn ${isSel ? 'selected' : ''}" data-i="${i}"><span>${escapeHTML(opt)}</span><span class="opt-check"></span></button>`;
+  });
+  html += '</div><div class="feedback" id="pollFeedback">' + (selected != null ? '已送出，可再次點選以更改' : (isMulti ? '可複選，選好後自動送出' : '點選一個選項即可送出')) + '</div>';
+  main.innerHTML = html;
+
+  function submit() {
+    const value = isMulti ? { optionIndices: selected, deviceId, ts: firebase.database.ServerValue.TIMESTAMP }
+                           : { optionIndex: selected, deviceId, ts: firebase.database.ServerValue.TIMESTAMP };
+    sessRef.child('responses/' + activeId).child(deviceId).set(value);
+    localStorage.setItem(voteKey, JSON.stringify(selected));
+    toast('已送出');
+  }
+
+  document.getElementById('pollOpts').addEventListener('click', e => {
+    const btn = e.target.closest('.opt-btn');
+    if (!btn) return;
+    const i = Number(btn.dataset.i);
+    if (isMulti) {
+      selected = Array.isArray(selected) ? selected.slice() : [];
+      const idx = selected.indexOf(i);
+      if (idx >= 0) selected.splice(idx, 1); else selected.push(i);
+    } else {
+      selected = i;
+    }
+    document.querySelectorAll('.opt-btn').forEach(b => {
+      const bi = Number(b.dataset.i);
+      const isSel = isMulti ? selected.includes(bi) : selected === bi;
+      b.classList.toggle('selected', isSel);
+    });
+    document.getElementById('pollFeedback').textContent = '已送出，可再次點選以更改';
+    submit();
+  });
+}
+
+// ---------- 留言板輸入 ----------
+function renderQaUI(q) {
+  const main = document.getElementById('main');
+  main.innerHTML = `
+    <textarea id="qaInput" placeholder="輸入你的留言或問題…" maxlength="300"></textarea>
+    <div class="charcount"><span id="qaLen">0</span>/300</div>
+    <button class="submit-btn" id="qaSubmit">送出留言</button>
+    <div class="feedback" id="qaFeedback"></div>`;
+
+  const cooldownKey = 'lps_qa_cd_' + sessionId + '_' + activeId;
+  const COOLDOWN = 15;
+
+  document.getElementById('qaInput').addEventListener('input', e => {
+    document.getElementById('qaLen').textContent = e.target.value.length;
+  });
+
+  function updateBtnState() {
+    const remain = COOLDOWN - getCooldownRemaining(cooldownKey);
+    const btn = document.getElementById('qaSubmit');
+    const fb = document.getElementById('qaFeedback');
+    if (!btn) return;
+    if (remain > 0) {
+      btn.disabled = true;
+      fb.innerHTML = `<span class="cooldown">請等待 ${Math.ceil(remain)} 秒再送出下一則</span>`;
+    } else {
+      btn.disabled = false;
+      fb.textContent = '';
+      if (cooldownTimer) clearInterval(cooldownTimer);
+    }
+  }
+  updateBtnState();
+  cooldownTimer = setInterval(updateBtnState, 500);
+
+  document.getElementById('qaSubmit').onclick = () => {
+    const input = document.getElementById('qaInput');
+    const val = sanitizeInput(input.value, 300);
+    if (!val) return;
+    sessRef.child('responses/' + activeId).push({
+      text: val, deviceId, approved: false, pinned: false,
+      ts: firebase.database.ServerValue.TIMESTAMP
+    });
+    setCooldownNow(cooldownKey);
+    input.value = '';
+    document.getElementById('qaLen').textContent = '0';
+    updateBtnState();
+    toast('已送出，等候主持人顯示');
+  };
+}
+</script>
+</body>
+</html>

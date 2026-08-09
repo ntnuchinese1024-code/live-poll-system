@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>簡報呈現 — 即時互動系統</title>
+<script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-database-compat.js"></script>
+<script src="firebase-config.js"></script>
+<script src="common.js"></script>
+<style>
+  :root{
+    --bg:#0a0c10; --panel:#14171d; --border:#242833;
+    --text:#f4f6fa; --muted:#8b93a3; --accent:#6ea8fe; --accent2:#22c55e; --warn:#fbbf24;
+  }
+  *{box-sizing:border-box;}
+  html,body{height:100%;margin:0;}
+  body{
+    background:radial-gradient(circle at 20% 0%, #161a22 0%, var(--bg) 55%);
+    color:var(--text);font-family:-apple-system,"PingFang TC","Noto Sans TC",Segoe UI,sans-serif;
+    overflow:hidden;
+  }
+  #stage{display:grid;height:100vh;width:100vw;transition:grid-template-columns .4s ease, grid-template-rows .4s ease;}
+
+  #mainArea{grid-area:main;display:flex;flex-direction:column;min-width:0;min-height:0;padding:clamp(16px,3vw,48px);}
+  #qTitle{font-size:clamp(22px,3.2vw,44px);font-weight:800;letter-spacing:.3px;margin-bottom:6px;line-height:1.25;}
+  #qTypeTag{display:inline-block;font-size:clamp(11px,1vw,14px);color:var(--accent);text-transform:uppercase;letter-spacing:1px;font-weight:700;margin-bottom:14px;}
+  #content{flex:1;min-height:0;display:flex;align-items:center;justify-content:center;position:relative;}
+
+  #waiting{color:var(--muted);text-align:center;font-size:clamp(18px,2vw,26px);}
+  #waiting .pulse{display:inline-block;width:14px;height:14px;border-radius:50%;background:var(--accent2);margin-right:10px;animation:pulse 1.4s infinite;}
+  @keyframes pulse{0%,100%{opacity:.3}50%{opacity:1}}
+
+  canvas#cloudCanvas{width:100%;height:100%;}
+
+  #pollWrap{width:100%;max-width:1100px;height:100%;display:flex;flex-direction:column;gap:10px;}
+  #pollChartBox{flex:1;min-height:0;position:relative;}
+  #pollTotal{color:var(--muted);font-size:clamp(12px,1.1vw,16px);text-align:center;}
+
+  #qaWrap{width:100%;height:100%;overflow-y:auto;column-width:min(340px,90%);column-gap:16px;padding:4px;}
+  .qa-card{break-inside:avoid;background:var(--panel);border:1px solid var(--border);border-radius:14px;padding:16px 18px;margin:0 0 16px;font-size:clamp(14px,1.3vw,19px);line-height:1.5;animation:cardIn .5s cubic-bezier(.22,1,.36,1);}
+  .qa-card.pinned{border-color:var(--warn);box-shadow:0 0 0 1px var(--warn);}
+  .qa-card .pin-badge{font-size:11px;color:var(--warn);font-weight:700;margin-bottom:6px;letter-spacing:.5px;}
+  @keyframes cardIn{from{opacity:0;transform:translateY(16px) scale(.97);}to{opacity:1;transform:none;}}
+
+  #qrArea{grid-area:qr;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;background:var(--panel);border-left:1px solid var(--border);padding:20px;}
+  #qrArea.pos-left{border-left:none;border-right:1px solid var(--border);}
+  #qrArea.pos-top{flex-direction:row;border-left:none;border-bottom:1px solid var(--border);justify-content:center;gap:22px;}
+  #qrCanvas{border-radius:12px;background:#fff;padding:10px;box-shadow:0 8px 30px rgba(0,0,0,.4);line-height:0;max-width:min(220px,80%);box-sizing:border-box;}
+  #qrCanvas canvas, #qrCanvas img{width:100%;height:auto;display:block;}
+  #qrArea.pos-top #qrCanvas{max-width:min(140px,30vw);}
+  #qrArea .qrtext{text-align:center;color:var(--muted);font-size:clamp(12px,1vw,16px);}
+  #qrArea .qrtext b{color:var(--text);display:block;font-size:clamp(14px,1.2vw,18px);margin-bottom:4px;}
+  #respBadge{position:fixed;bottom:16px;right:16px;background:var(--panel);border:1px solid var(--border);border-radius:20px;padding:6px 14px;font-size:12px;color:var(--muted);}
+</style>
+</head>
+<body>
+
+<div id="stage">
+  <div id="mainArea">
+    <div id="qTypeTag"></div>
+    <div id="qTitle"></div>
+    <div id="content">
+      <div id="waiting"><span class="pulse"></span>等待主持人開始互動題目…</div>
+    </div>
+  </div>
+  <div id="qrArea">
+    <div id="qrCanvas"></div>
+    <div class="qrtext"><b>掃描加入互動</b>手機掃描 QR Code 即可參與</div>
+  </div>
+</div>
+<div id="respBadge" style="display:none"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/qrcodejs@1.0.0/qrcode.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/wordcloud@1.2.2/src/wordcloud2.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+<script>
+firebase.initializeApp(firebaseConfig);
+const db = firebase.database();
+const sessionId = getSessionId();
+const sessRef = db.ref('sessions/' + sessionId);
+
+// ---------- QR ----------
+const audienceUrl = buildAudienceUrl(sessionId);
+const qrCanvasEl = document.getElementById('qrCanvas');
+if (typeof QRCode !== 'undefined') {
+  new QRCode(qrCanvasEl, { text: audienceUrl, width: 220, height: 220, correctLevel: QRCode.CorrectLevel.M });
+} else {
+  qrCanvasEl.textContent = audienceUrl;
+  qrCanvasEl.style.cssText = 'padding:16px;font-size:13px;word-break:break-all;max-width:220px;';
+}
+
+// ---------- 版面設定（QR 位置 / 佔比）----------
+const stage = document.getElementById('stage');
+const qrArea = document.getElementById('qrArea');
+function applyLayout(settings) {
+  const pos = settings.qrPosition || 'right';
+  const ratio = Math.min(Math.max(settings.qrRatio || 25, 12), 45);
+  qrArea.classList.remove('pos-left', 'pos-top', 'pos-right');
+  if (pos === 'top') {
+    stage.style.gridTemplateColumns = '1fr';
+    stage.style.gridTemplateRows = `${ratio}% 1fr`;
+    stage.style.gridTemplateAreas = '"qr" "main"';
+    qrArea.classList.add('pos-top');
+  } else if (pos === 'left') {
+    stage.style.gridTemplateRows = '1fr';
+    stage.style.gridTemplateColumns = `${ratio}% ${100 - ratio}%`;
+    stage.style.gridTemplateAreas = '"qr main"';
+    qrArea.classList.add('pos-left');
+  } else {
+    stage.style.gridTemplateRows = '1fr';
+    stage.style.gridTemplateColumns = `${100 - ratio}% ${ratio}%`;
+    stage.style.gridTemplateAreas = '"main qr"';
+  }
+}
+applyLayout({}); // 套用預設版面，避免連線建立前畫面跑版
+sessRef.child('settings').on('value', snap => applyLayout(snap.val() || {}));
+
+// ---------- 題目切換 ----------
+let questionsCache = {};
+let activeId = null;
+let autoApproveQA = true;
+let activeResponsesRef = null;
+let chartInstance = null;
+let lastQaItems = null;
+
+sessRef.child('questions').on('value', snap => { questionsCache = snap.val() || {}; renderActive(); });
+sessRef.child('settings').on('value', snap => {
+  autoApproveQA = (snap.val() || {}).autoApproveQA !== false;
+  if (lastQaItems && activeId && questionsCache[activeId] && questionsCache[activeId].type === 'qa') {
+    renderQa(lastQaItems);
+  }
+});
+sessRef.child('activeQuestionId').on('value', snap => { activeId = snap.val() || null; renderActive(); });
+
+const typeLabel = { wordcloud: '即時文字雲', poll: '即時投票', qa: '匿名留言板 / Q&A' };
+
+function renderActive() {
+  const content = document.getElementById('content');
+  const titleEl = document.getElementById('qTitle');
+  const tagEl = document.getElementById('qTypeTag');
+  const badge = document.getElementById('respBadge');
+
+  if (activeResponsesRef) { activeResponsesRef.off(); activeResponsesRef = null; }
+  if (chartInstance) { chartInstance.destroy(); chartInstance = null; }
+  lastQaItems = null;
+
+  if (!activeId || !questionsCache[activeId]) {
+    tagEl.textContent = '';
+    titleEl.textContent = '';
+    content.innerHTML = '<div id="waiting"><span class="pulse"></span>等待主持人開始互動題目…</div>';
+    badge.style.display = 'none';
+    return;
+  }
+
+  const q = questionsCache[activeId];
+  tagEl.textContent = typeLabel[q.type] || '';
+  titleEl.textContent = q.title;
+  badge.style.display = 'block';
+
+  activeResponsesRef = sessRef.child('responses/' + activeId);
+
+  if (q.type === 'wordcloud') {
+    content.innerHTML = '<canvas id="cloudCanvas"></canvas>';
+    activeResponsesRef.on('value', snap => renderWordCloud(snap.val() || {}));
+  } else if (q.type === 'poll') {
+    content.innerHTML = '<div id="pollWrap"><div id="pollChartBox"><canvas id="pollChart"></canvas></div><div id="pollTotal"></div></div>';
+    activeResponsesRef.on('value', snap => renderPoll(q, snap.val() || {}));
+  } else if (q.type === 'qa') {
+    content.innerHTML = '<div id="qaWrap"></div>';
+    activeResponsesRef.on('value', snap => { lastQaItems = snap.val() || {}; renderQa(lastQaItems); });
+  }
+}
+
+// ---------- 文字雲 ----------
+function renderWordCloud(items) {
+  const badge = document.getElementById('respBadge');
+  const freq = {};
+  Object.values(items).forEach(it => {
+    const w = (it.text || '').trim();
+    if (!w) return;
+    freq[w] = (freq[w] || 0) + 1;
+  });
+  badge.textContent = Object.keys(items).length + ' 則回應';
+  const list = Object.entries(freq).sort((a, b) => b[1] - a[1]).slice(0, 150);
+  const canvas = document.getElementById('cloudCanvas');
+  if (!canvas) return;
+  const parent = canvas.parentElement;
+  canvas.width = parent.clientWidth;
+  canvas.height = parent.clientHeight;
+  if (typeof WordCloud === 'undefined') {
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#8b93a3';
+    ctx.font = '18px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('文字雲套件載入失敗，請確認網路可連到 CDN 後重新整理', canvas.width / 2, canvas.height / 2);
+    return;
+  }
+  if (!list.length) {
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#8b93a3';
+    ctx.font = '20px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('尚無回應，請掃描 QR Code 參與', canvas.width / 2, canvas.height / 2);
+    return;
+  }
+  const palette = ['#6ea8fe', '#8b5cf6', '#22c55e', '#fbbf24', '#f87171', '#38bdf8'];
+  WordCloud(canvas, {
+    list,
+    gridSize: Math.round(canvas.width / 100),
+    weightFactor: size => Math.pow(size, 0.85) * (canvas.width / (list[0][1] * 24 + 40)) * 22,
+    fontFamily: '-apple-system,"PingFang TC","Noto Sans TC",sans-serif',
+    color: () => palette[Math.floor(Math.random() * palette.length)],
+    backgroundColor: 'transparent',
+    rotateRatio: 0.15,
+    rotationSteps: 2,
+    shrinkToFit: true,
+    drawOutOfBound: false,
+  });
+}
+
+// ---------- 投票長條圖（Chart.js）----------
+const POLL_COLORS = ['#6ea8fe', '#8b5cf6', '#22c55e', '#fbbf24', '#f87171', '#38bdf8', '#fb923c', '#34d399'];
+function renderPoll(q, items) {
+  const box = document.getElementById('pollChartBox');
+  const totalEl = document.getElementById('pollTotal');
+  if (!box) return;
+  if (typeof Chart === 'undefined') {
+    box.innerHTML = '<div id="waiting">圖表套件載入失敗，請確認網路可連到 CDN 後重新整理</div>';
+    return;
+  }
+  const counts = new Array(q.options.length).fill(0);
+  Object.values(items).forEach(it => {
+    if (Array.isArray(it.optionIndices)) it.optionIndices.forEach(i => { if (counts[i] != null) counts[i]++; });
+    else if (typeof it.optionIndex === 'number' && counts[it.optionIndex] != null) counts[it.optionIndex]++;
+  });
+  const total = counts.reduce((a, b) => a + b, 0);
+  const percents = counts.map(c => total ? Math.round((c / total) * 100) : 0);
+  document.getElementById('respBadge').textContent = Object.keys(items).length + ' 位參與';
+  totalEl.textContent = `共 ${total} 票${q.multi ? '（可複選）' : ''}`;
+
+  if (chartInstance) {
+    chartInstance.data.labels = q.options;
+    chartInstance.data.datasets[0].data = percents;
+    chartInstance.data.datasets[0].countData = counts;
+    chartInstance.update();
+    return;
+  }
+
+  const canvas = document.getElementById('pollChart');
+  chartInstance = new Chart(canvas.getContext('2d'), {
+    type: 'bar',
+    data: {
+      labels: q.options,
+      datasets: [{ data: percents, countData: counts, backgroundColor: POLL_COLORS, borderRadius: 8, maxBarThickness: 60 }]
+    },
+    options: {
+      indexAxis: 'y',
+      responsive: true,
+      maintainAspectRatio: false,
+      animation: { duration: 600, easing: 'easeOutQuint' },
+      scales: {
+        x: { max: 100, ticks: { color: '#8b93a3', callback: v => v + '%' }, grid: { color: '#242833' } },
+        y: { ticks: { color: '#f4f6fa', font: { size: 16, weight: '600' } }, grid: { display: false } }
+      },
+      plugins: {
+        legend: { display: false },
+        tooltip: { callbacks: { label: ctx => `${ctx.parsed.x}%（${ctx.dataset.countData[ctx.dataIndex]} 票）` } }
+      }
+    },
+    plugins: [{
+      id: 'barValueLabels',
+      afterDatasetsDraw(chart) {
+        const { ctx, chartArea } = chart;
+        const ds = chart.data.datasets[0];
+        const meta = chart.getDatasetMeta(0);
+        ds.data.forEach((val, i) => {
+          const bar = meta.data[i];
+          if (!bar) return;
+          const label = `${val}%（${ds.countData[i]}）`;
+          ctx.save();
+          ctx.font = '700 14px sans-serif';
+          const textWidth = ctx.measureText(label).width;
+          const spaceRight = chartArea.right - bar.x;
+          ctx.textBaseline = 'middle';
+          if (spaceRight > textWidth + 16) {
+            ctx.fillStyle = '#f4f6fa';
+            ctx.textAlign = 'left';
+            ctx.fillText(label, bar.x + 8, bar.y);
+          } else {
+            ctx.fillStyle = '#ffffff';
+            ctx.textAlign = 'right';
+            ctx.fillText(label, bar.x - 8, bar.y);
+          }
+          ctx.restore();
+        });
+      }
+    }]
+  });
+}
+
+// ---------- 留言板 ----------
+function renderQa(items) {
+  const wrap = document.getElementById('qaWrap');
+  if (!wrap) return;
+  const visible = Object.entries(items).filter(([, it]) => it.approved || autoApproveQA);
+  document.getElementById('respBadge').textContent = visible.length + ' 則留言';
+  visible.sort((a, b) => (b[1].pinned ? 1 : 0) - (a[1].pinned ? 1 : 0) || (b[1].ts || 0) - (a[1].ts || 0));
+  if (!visible.length) {
+    wrap.innerHTML = '<div id="waiting" style="column-span:all"><span class="pulse"></span>尚無留言，掃描 QR Code 留下你的想法</div>';
+    return;
+  }
+  wrap.innerHTML = visible.map(([id, it]) => `
+    <div class="qa-card ${it.pinned ? 'pinned' : ''}" data-id="${id}">
+      ${it.pinned ? '<div class="pin-badge">📌 精選</div>' : ''}
+      <div>${escapeHTML(it.text)}</div>
+    </div>`).join('');
+}
+</script>
+</body>
+</html>
