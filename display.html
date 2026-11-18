@@ -131,7 +131,11 @@ sessRef.child('settings').on('value', snap => {
   if (sc !== optionScale) {
     optionScale = sc;
     document.documentElement.style.setProperty('--opt-scale', sc);
-    if (chartInstance) chartInstance.update();
+    if (chartInstance) {
+      const cq = questionsCache[activeId];
+      if (cq && cq.options) chartInstance.data.labels = cq.options.map(wrapLabel);
+      chartInstance.update();
+    }
   }
   if (lastQaItems && activeId && questionsCache[activeId] && questionsCache[activeId].type === 'qa') {
     renderQa(lastQaItems);
@@ -180,6 +184,26 @@ function renderActive() {
 
 // ---------- 文字雲 ----------
 let optionScale = 1; // 控制台「選項字級」拉桿（settings.optionScale，百分比）
+// 長選項自動換行：字級越大，每行字數越少（優先在逗號後斷行）
+function wrapLabel(t) {
+  const max = Math.max(5, Math.round(15 / optionScale));
+  if (!t || t.length <= max) return t;
+  const lines = []; let rest = t;
+  while (rest.length > max) {
+    const n = Math.ceil(rest.length / max), target = Math.ceil(rest.length / n);
+    let cut = -1;
+    for (let k = Math.min(max, rest.length - 1); k >= Math.floor(target * 0.6); k--) {
+      if ('，、。？！,; '.includes(rest[k - 1])) { cut = k; break; }
+    }
+    if (cut < 0) cut = target;
+    lines.push(rest.slice(0, cut)); rest = rest.slice(cut);
+  }
+  if (rest) {
+    if (/^[」』）)。，、？！]+$/.test(rest) && lines.length) lines[lines.length - 1] += rest;
+    else lines.push(rest);
+  }
+  return lines;
+}
 function pollFontSize() { return Math.round(Math.max(20, Math.min(40, window.innerWidth * 0.019)) * optionScale); }
 
 function renderWordCloud(items) {
@@ -249,7 +273,7 @@ function renderPoll(q, items) {
   totalEl.textContent = `共 ${total} 票${q.multi ? '（可複選）' : ''}`;
 
   if (chartInstance) {
-    chartInstance.data.labels = q.options;
+    chartInstance.data.labels = q.options.map(wrapLabel);
     chartInstance.data.datasets[0].data = percents;
     chartInstance.data.datasets[0].countData = counts;
     chartInstance.update();
@@ -261,7 +285,7 @@ function renderPoll(q, items) {
   chartInstance = new Chart(canvas.getContext('2d'), {
     type: 'bar',
     data: {
-      labels: q.options,
+      labels: q.options.map(wrapLabel),
       datasets: [{ data: percents, countData: counts, backgroundColor: POLL_COLORS, borderRadius: 8, maxBarThickness: 90 }]
     },
     options: {
