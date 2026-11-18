@@ -163,6 +163,12 @@
           <input type="range" id="qrRatioRange" min="12" max="45" value="25" />
         </div>
         <div>
+          <div style="font-size:12px;color:var(--muted);margin-bottom:6px">
+            選項字級：<span id="optScaleVal">100</span>%（大螢幕與觀眾手機的選項、留言）
+          </div>
+          <input type="range" id="optScaleRange" min="60" max="220" step="10" value="100" />
+        </div>
+        <div>
           <div style="font-size:12px;color:var(--muted);margin-bottom:6px">觀眾端網址（QR Code 內容）</div>
           <div class="link-box" id="audienceLinkBox">—</div>
           <div class="qr-preview" id="qrPreview" style="margin-top:8px"></div>
@@ -417,6 +423,10 @@ document.getElementById('qrRatioRange').addEventListener('input', e => {
 document.getElementById('qrRatioRange').addEventListener('change', e => {
   settingsRef.update({ qrRatio: Number(e.target.value) });
 });
+document.getElementById('optScaleRange').addEventListener('input', e => {
+  document.getElementById('optScaleVal').textContent = e.target.value;
+  settingsRef.update({ optionScale: Number(e.target.value) });
+});
 
 settingsRef.on('value', snap => {
   const s = snap.val() || {};
@@ -424,6 +434,10 @@ settingsRef.on('value', snap => {
   if (s.qrRatio) {
     document.getElementById('qrRatioRange').value = s.qrRatio;
     document.getElementById('qrRatioVal').textContent = s.qrRatio;
+  }
+  if (s.optionScale) {
+    document.getElementById('optScaleRange').value = s.optionScale;
+    document.getElementById('optScaleVal').textContent = s.optionScale;
   }
   document.getElementById('autoApproveChk').checked = s.autoApproveQA !== false;
 });

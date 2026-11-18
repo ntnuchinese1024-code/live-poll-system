@@ -46,7 +46,7 @@
 
   .opt-btn{
     width:100%;text-align:left;padding:16px 18px;border-radius:14px;border:1px solid var(--border);
-    background:var(--panel2);color:var(--text);font-size:19px;font-weight:600;cursor:pointer;
+    background:var(--panel2);color:var(--text);font-size:calc(19px * var(--opt-scale, 1));font-weight:600;cursor:pointer;
     margin-bottom:10px;display:flex;align-items:center;justify-content:space-between;transition:.15s;
   }
   .opt-btn.selected{border-color:var(--accent);background:rgba(110,168,254,.12);color:var(--accent);}
@@ -105,6 +105,11 @@ let cooldownTimer = null;
 
 sessRef.child('questions').on('value', snap => { questionsCache = snap.val() || {}; render(); });
 sessRef.child('activeQuestionId').on('value', snap => { activeId = snap.val() || null; render(); });
+// 控制台「選項字級」拉桿：觀眾手機的選項依比例縮放（手機上限 160%，避免換行太多）
+sessRef.child('settings/optionScale').on('value', snap => {
+  const sc = Math.min(Math.max((snap.val() || 100) / 100, 0.8), 1.6);
+  document.documentElement.style.setProperty('--opt-scale', sc);
+});
 
 const typeLabel = { wordcloud: '文字雲', poll: '投票', qa: '留言板 / Q&A' };
 

@@ -38,7 +38,7 @@
   #pollTotal{color:var(--muted);font-size:clamp(16px,1.6vw,26px);text-align:center;}
 
   #qaWrap{width:100%;height:100%;overflow-y:auto;column-width:min(440px,90%);column-gap:16px;padding:4px;}
-  .qa-card{break-inside:avoid;background:var(--panel);border:1px solid var(--border);border-radius:14px;padding:16px 18px;margin:0 0 16px;font-size:clamp(18px,2vw,30px);line-height:1.5;animation:cardIn .5s cubic-bezier(.22,1,.36,1);}
+  .qa-card{break-inside:avoid;background:var(--panel);border:1px solid var(--border);border-radius:14px;padding:16px 18px;margin:0 0 16px;font-size:calc(clamp(18px,2vw,30px) * var(--opt-scale, 1));line-height:1.5;animation:cardIn .5s cubic-bezier(.22,1,.36,1);}
   .qa-card.pinned{border-color:var(--warn);box-shadow:0 0 0 1px var(--warn);}
   .qa-card .pin-badge{font-size:15px;color:var(--warn);font-weight:700;margin-bottom:6px;letter-spacing:.5px;}
   @keyframes cardIn{from{opacity:0;transform:translateY(16px) scale(.97);}to{opacity:1;transform:none;}}
@@ -127,6 +127,12 @@ let lastQaItems = null;
 sessRef.child('questions').on('value', snap => { questionsCache = snap.val() || {}; renderActive(); });
 sessRef.child('settings').on('value', snap => {
   autoApproveQA = (snap.val() || {}).autoApproveQA !== false;
+  const sc = Math.min(Math.max(((snap.val() || {}).optionScale || 100) / 100, 0.6), 2.2);
+  if (sc !== optionScale) {
+    optionScale = sc;
+    document.documentElement.style.setProperty('--opt-scale', sc);
+    if (chartInstance) chartInstance.update();
+  }
   if (lastQaItems && activeId && questionsCache[activeId] && questionsCache[activeId].type === 'qa') {
     renderQa(lastQaItems);
   }
@@ -173,7 +179,8 @@ function renderActive() {
 }
 
 // ---------- 文字雲 ----------
-function pollFontSize() { return Math.round(Math.max(20, Math.min(40, window.innerWidth * 0.019))); }
+let optionScale = 1; // 控制台「選項字級」拉桿（settings.optionScale，百分比）
+function pollFontSize() { return Math.round(Math.max(20, Math.min(40, window.innerWidth * 0.019)) * optionScale); }
 
 function renderWordCloud(items) {
   const badge = document.getElementById('respBadge');
